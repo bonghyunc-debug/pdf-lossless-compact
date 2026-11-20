@@ -1,0 +1,21 @@
+# PDF 용량 줄이기
+
+Windows 10·11 64비트용 개인 PDF 압축 도구입니다. 파일 처리는 PC 안에서 이루어집니다.
+
+1. `PDFCompact.exe`를 실행하고 압축할 PDF를 선택합니다.
+2. 결과가 더 작아지면 원본 폴더에 `파일명_압축.pdf`가 생깁니다. 같은 이름이 있으면 번호가 붙습니다.
+3. 결과 창에서 원래 크기와 압축 후 크기를 확인합니다. 다른 문서를 처리하려면 **다른 PDF 선택**을 누릅니다.
+
+글자, 글꼴, 벡터 도형, 사진의 해상도를 유지하면서 PDF 내부 데이터를 무손실로 다시 압축합니다. 이미 효율적으로 압축된 스캔본은 용량 차이가 작거나 없을 수 있습니다. 더 작아지지 않으면 원본만 남습니다. 전자서명이나 암호 보호가 있는 PDF도 원본을 유지합니다.
+
+## 빌드 및 테스트
+
+Windows x64와 Python 3.12 환경에서 다음 명령으로 단일 실행 파일을 만들 수 있습니다. 완성된 파일은 `dist/PDFCompact.exe`입니다.
+
+```powershell
+python -m venv .build-env
+.\.build-env\Scripts\python -m pip install -r requirements-build.txt
+.\.build-env\Scripts\python build_windows.py
+```
+
+GitHub Actions의 **Windows build and test**를 수동 실행하면 가상 문서를 생성해 화면 픽셀, 검색용 글자, 양식, 첨부, 원본 보존을 비교합니다. 이어서 빌드한 실행 파일에서 Windows 파일 선택창을 통해 실제 압축을 검사합니다. 성공한 실행의 산출물에 실행 파일이 들어 있습니다.

@@ -1,0 +1,44 @@
+name: Windows build and test
+"on": workflow_dispatch
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 12
+    env:
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          architecture: x64
+      - name: Build the standalone Windows application
+        shell: pwsh
+        run: |
+          python -m venv .build-env
+          .\.build-env\Scripts\python -m pip install --only-binary=:all: -r requirements-build.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .\.build-env\Scripts\python build_windows.py
+      - name: Install PDF comparison and UI test tools
+        run: |
+          .\.build-env\Scripts\python -m pip install --only-binary=:all: pypdfium2==5.15.2 pywinauto==0.6.9
+      - name: Compare page pixels, text and document features
+        run: .\.build-env\Scripts\python -m unittest -v tests.test_compress
+      - name: Use the final EXE through a real Windows file picker
+        run: .\.build-env\Scripts\python -m tests.windows_ui dist/PDFCompact.exe
+      - name: Save the tested executable
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: PDFCompact-Windows-x64
+          path: dist/PDFCompact.exe
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
