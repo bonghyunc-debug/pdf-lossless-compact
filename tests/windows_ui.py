@@ -16,16 +16,13 @@ def enter_file(dialog, path):
     dialog.wait("visible", timeout=45)
     # IFileDialog's filename ComboBox contains a UIA Edit. The older common
     # dialog instead exposes the filename field as an Edit directly.
-    filename = dialog.child_window(auto_id="1148")
-    if filename.exists(timeout=2):
-        wrapper = filename.wrapper_object()
-        if wrapper.element_info.control_type == "Edit":
-            edit = wrapper
-        else:
-            edit = wrapper.descendants(control_type="Edit")[0]
-    else:
-        edits = dialog.descendants(control_type="Edit")
-        edit = next(e for e in edits if e.element_info.name.startswith("File name"))
+    edits = dialog.descendants(control_type="Edit")
+    matches = [e for e in edits if e.element_info.automation_id == "1148"
+               or e.element_info.name.startswith("File name")]
+    if len(matches) != 1:
+        observed = [(e.element_info.automation_id, e.element_info.name) for e in edits]
+        raise RuntimeError(f"Expected one filename edit, found {len(matches)}. Edits: {observed}")
+    edit = matches[0]
     edit.set_edit_text(str(path))
     dialog.child_window(auto_id="1", control_type="Button").invoke()
 
