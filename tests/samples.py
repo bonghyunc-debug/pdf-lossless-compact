@@ -63,9 +63,10 @@ def make_sample(path: Path, *, precompressed=False, version="1.7", needs_appeara
         fonts = Dictionary(F1=latin, K=korean_font(pdf))
         first = pdf.add_blank_page(page_size=(420, 560))
         first.Resources = Dictionary(Font=fonts)
-        first.obj.PieceInfo = Dictionary(Example=Dictionary(
-            LastModified="D:20250101000000Z",
-            Private=Dictionary(Contents="ordinary private text", ByteRange=Array([0, 6, 12, 20]))))
+        private = Dictionary(Contents="ordinary private text", ByteRange=Array([0, 6, 12, 20]),
+                             Template=Dictionary(FT=Name.Sig, V=Dictionary(Contents="template memo")))
+        first.obj.PieceInfo = Dictionary(Example=Dictionary(LastModified="D:20250101000000Z",
+                                                            Private=private))
         content = [b"0.1 0.2 0.24 rg BT /K 24 Tf 30 512 Td <0102> Tj ET",
                    b"BT /F1 16 Tf 88 516 Td (Sample register) Tj ET"]
         for row in range(20):

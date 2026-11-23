@@ -61,6 +61,7 @@ class SignedCopyTests(unittest.TestCase):
                     private = pdf.pages[0].obj.PieceInfo.Example.Private
                     self.assertEqual(private.Contents, "ordinary private text")
                     self.assertEqual(list(private.ByteRange), [0, 6, 12, 20])
+                    self.assertEqual(private.Template.V.Contents, "template memo")
                     self.assertEqual(pdf.attachments["sample.txt"].get_file().read_bytes(),
                                      b"Local sample attachment.\n")
                 print(f"Signed PDF: {len(certs)} signature(s), visible={visible}, NeedAppearances={needs_ap}, "
@@ -96,6 +97,9 @@ class SignedCopyTests(unittest.TestCase):
             page.Contents = pdf.make_stream(b"0.4 g 10 10 20 20 re f\n" * 80)
             page.obj["/ByteRange"] = Array([0, 20])
             page.Resources.Example = Dictionary(Contents="ordinary", ByteRange=Array([0, 6, 12, 20]))
+            template = Dictionary(FT=Name.Sig, V=Dictionary(Contents="template memo"))
+            page.obj.PieceInfo = Dictionary(Example=Dictionary(LastModified="D:20250101000000Z",
+                                                               Private=template))
             pdf.save(self.source, compress_streams=False)
         result = compress(self.source)
         self.assertFalse(result.reading_copy)
@@ -104,11 +108,14 @@ class SignedCopyTests(unittest.TestCase):
             data = pdf.pages[0].Resources.Example
             self.assertEqual(data.Contents, "ordinary")
             self.assertEqual(list(data.ByteRange), [0, 6, 12, 20])
+            template = pdf.pages[0].obj.PieceInfo.Example.Private
+            self.assertEqual(template.FT, Name.Sig)
+            self.assertEqual(template.V.Contents, "template memo")
 
     def test_untyped_signature_field_and_usage_rights_keep_other_form_data(self):
         base = self.folder / "base.pdf"
         make_sample(base)
-        for location in ("field", "/UR", "/UR3"):
+        for location in ("field", "separate-widget", "/UR", "/UR3"):
             with self.subTest(location=location):
                 with pikepdf.Pdf.open(base) as pdf:
                     value = pdf.make_indirect(Dictionary(
@@ -119,6 +126,13 @@ class SignedCopyTests(unittest.TestCase):
                     if location == "field":
                         pdf.Root.AcroForm.Fields.append(
                             pdf.make_indirect(Dictionary(FT=Name.Sig, T="Archived", V=value)))
+                    elif location == "separate-widget":
+                        parent = pdf.make_indirect(Dictionary(FT=Name.Sig, T="Archived", V=value))
+                        widget = pdf.make_indirect(Dictionary(
+                            Type=Name.Annot, Subtype=Name.Widget, Parent=parent, Rect=Array([0, 0, 0, 0])))
+                        parent.Kids = Array([widget])
+                        pdf.Root.AcroForm.Fields.append(parent)
+                        pdf.pages[0].Annots.append(widget)
                     else:
                         pdf.Root.Perms[location] = value
                     pdf.save(self.source, compress_streams=False)

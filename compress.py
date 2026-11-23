@@ -44,28 +44,56 @@ def _dictionaries(pdf):
                            and not child.is_indirect)
 
 
+def _form_nodes(pdf):
+    # Only the form tree and page widgets describe interactive PDF fields.
+    # Producers can also store unrelated field templates in private metadata.
+    form = pdf.Root.get("/AcroForm")
+    roots = form.get("/Fields") if isinstance(form, pikepdf.Dictionary) else None
+    pending = list(roots) if isinstance(roots, pikepdf.Array) else []
+    for page in pdf.pages:
+        annotations = page.obj.get("/Annots")
+        if isinstance(annotations, pikepdf.Array):
+            pending.extend(item for item in annotations if isinstance(item, pikepdf.Dictionary)
+                           and item.get("/Subtype") == pikepdf.Name.Widget)
+    seen = set()
+    while pending:
+        node = pending.pop()
+        if not isinstance(node, pikepdf.Dictionary):
+            continue
+        if node.is_indirect:
+            if node.objgen in seen:
+                continue
+            seen.add(node.objgen)
+        yield node
+        parent = node.get("/Parent")
+        if isinstance(parent, pikepdf.Dictionary):
+            pending.append(parent)
+        kids = node.get("/Kids")
+        if isinstance(kids, pikepdf.Array):
+            pending.extend(kids)
+
+
 def _signature_parts(pdf):
-    fields, values = [], []
+    fields = []
+    values = [node for node in _dictionaries(pdf)
+              if node.get("/Type") in (pikepdf.Name.Sig, pikepdf.Name.DocTimeStamp)]
     permissions = pdf.Root.get("/Perms")
     if isinstance(permissions, pikepdf.Dictionary):
         for key in _PERMISSION_SIGNATURES:
             value = permissions.get(key)
             if isinstance(value, pikepdf.Dictionary):
                 values.append(value)
-    for node in _dictionaries(pdf):
-        if node.get("/Type") in (pikepdf.Name.Sig, pikepdf.Name.DocTimeStamp):
-            values.append(node)
-        if ("/FT" in node or node.get("/Subtype") == pikepdf.Name.Widget
-                or ("/Parent" in node and any(key in node for key in ("/V", "/T", "/Kids")))):
-            field = pikepdf.AcroFormField(node)
-            if field.field_type == "/Sig":
-                value = field.value
-                if value is not None:
-                    fields.append(node)
-                    # /Type is optional. The field reference identifies an
-                    # untyped signature without touching unrelated private data.
-                    if isinstance(value, pikepdf.Dictionary):
-                        values.append(value)
+    for node in _form_nodes(pdf):
+        field = pikepdf.AcroFormField(node)
+        if field.field_type != "/Sig":
+            continue
+        value = field.value
+        if value is not None:
+            fields.append(node)
+            # /Type is optional. The field reference identifies an
+            # untyped signature without touching unrelated private data.
+            if isinstance(value, pikepdf.Dictionary):
+                values.append(value)
     return fields, values
 
 
