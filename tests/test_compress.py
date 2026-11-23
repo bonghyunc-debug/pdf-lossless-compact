@@ -101,7 +101,11 @@ class CompressionTests(unittest.TestCase):
                     signature = Dictionary(Contents=b"test marker" * 400, ByteRange=Array([0, 12, 16, 8]))
                     if kind:
                         signature.Type = kind
-                    # The untyped case tests a nested direct dictionary.
+                    else:
+                        # A catalog certification can refer to an untyped
+                        # signature. Keep an extra alias to inspect the result.
+                        signature = pdf.make_indirect(signature)
+                        pdf.Root.Perms = Dictionary(DocMDP=signature)
                     pdf.Root.TestSignatures = Array([Dictionary(Entry=signature)])
                     pdf.save(self.source)
                 original = self.source.read_bytes()

@@ -56,13 +56,16 @@ def scan_image(pdf):
     return stream
 
 
-def make_sample(path: Path, *, precompressed=False, version="1.7"):
+def make_sample(path: Path, *, precompressed=False, version="1.7", needs_appearances=False):
     with pikepdf.Pdf.new() as pdf:
         latin = pdf.make_indirect(Dictionary(Type=Name.Font, Subtype=Name.Type1,
                                              BaseFont=Name.Helvetica))
         fonts = Dictionary(F1=latin, K=korean_font(pdf))
         first = pdf.add_blank_page(page_size=(420, 560))
         first.Resources = Dictionary(Font=fonts)
+        first.obj.PieceInfo = Dictionary(Example=Dictionary(
+            LastModified="D:20250101000000Z",
+            Private=Dictionary(Contents="ordinary private text", ByteRange=Array([0, 6, 12, 20]))))
         content = [b"0.1 0.2 0.24 rg BT /K 24 Tf 30 512 Td <0102> Tj ET",
                    b"BT /F1 16 Tf 88 516 Td (Sample register) Tj ET"]
         for row in range(20):
@@ -84,6 +87,8 @@ def make_sample(path: Path, *, precompressed=False, version="1.7"):
         first.Annots = Array([link, field])
         pdf.Root.AcroForm = Dictionary(Fields=Array([field]), DR=Dictionary(Font=fonts),
                                        DA="/F1 9 Tf 0 g")
+        if needs_appearances:
+            pdf.Root.AcroForm.NeedAppearances = True
         second = pdf.add_blank_page(page_size=(420, 560))
         second.Resources = Dictionary(Font=fonts, XObject=Dictionary(Scan=scan_image(pdf)))
         second.Contents = pdf.make_stream(

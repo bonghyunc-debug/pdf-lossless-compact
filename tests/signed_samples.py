@@ -8,6 +8,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from pyhanko.pdf_utils import generic
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
 from pyhanko.pdf_utils.reader import PdfFileReader
 from pyhanko.sign import fields, signers
@@ -17,6 +18,16 @@ from pyhanko_certvalidator import ValidationContext
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from tests.samples import make_sample
+
+
+class _ViewerGeneratedFormWriter(IncrementalPdfFileWriter):
+    def write(self, stream):
+        # pyHanko normally clears this flag. Set it before hashing each signed
+        # revision to model PDFs from producers that leave it enabled.
+        form = self.root["/AcroForm"]
+        form[generic.pdf_name("/NeedAppearances")] = generic.BooleanObject(True)
+        self.update_container(form)
+        super().write(stream)
 
 
 def _make_signer(common_name):
@@ -39,11 +50,13 @@ def _make_signer(common_name):
         cert_registry=SimpleCertificateStore())
 
 
-def make_signed_sample(path, *, separate_widget=False, visible=True, two_signers=False):
+def make_signed_sample(path, *, separate_widget=False, visible=True, two_signers=False,
+                       needs_appearances=False):
     base = BytesIO()
-    make_sample(base, precompressed=True)
+    make_sample(base, precompressed=True, needs_appearances=needs_appearances)
     base.seek(0)
-    writer = IncrementalPdfFileWriter(base)
+    writer_type = _ViewerGeneratedFormWriter if needs_appearances else IncrementalPdfFileWriter
+    writer = writer_type(base)
     fields.append_signature_field(writer, fields.SigFieldSpec("Unused", on_page=1))
     if two_signers:
         fields.append_signature_field(writer, fields.SigFieldSpec("Review", on_page=1,
@@ -59,7 +72,7 @@ def make_signed_sample(path, *, separate_widget=False, visible=True, two_signers
     if two_signers:
         other = _make_signer("PDF Compact Test B")
         certificates.append(other.signing_cert)
-        writer = IncrementalPdfFileWriter(first)
+        writer = writer_type(first)
         meta = signers.PdfSignatureMetadata(field_name="Review", md_algorithm="sha256")
         first = signers.PdfSigner(meta, signer=other, stamp_style=stamp).sign_pdf(writer)
     path.write_bytes(first.getvalue())

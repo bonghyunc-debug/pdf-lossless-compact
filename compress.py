@@ -9,6 +9,9 @@ import tempfile
 import pikepdf
 
 
+_PERMISSION_SIGNATURES = ("/DocMDP", "/UR", "/UR3")
+
+
 class PdfSkipped(Exception):
     """A document that needs to retain its original representation."""
 
@@ -43,18 +46,26 @@ def _dictionaries(pdf):
 
 def _signature_parts(pdf):
     fields, values = [], []
+    permissions = pdf.Root.get("/Perms")
+    if isinstance(permissions, pikepdf.Dictionary):
+        for key in _PERMISSION_SIGNATURES:
+            value = permissions.get(key)
+            if isinstance(value, pikepdf.Dictionary):
+                values.append(value)
     for node in _dictionaries(pdf):
-        kind = node.get("/Type")
-        if (kind in (pikepdf.Name.Sig, pikepdf.Name.DocTimeStamp)
-                or (kind is None and "/Subtype" not in node
-                    and isinstance(node.get("/ByteRange"), pikepdf.Array)
-                    and isinstance(node.get("/Contents"), pikepdf.String))):
+        if node.get("/Type") in (pikepdf.Name.Sig, pikepdf.Name.DocTimeStamp):
             values.append(node)
         if ("/FT" in node or node.get("/Subtype") == pikepdf.Name.Widget
                 or ("/Parent" in node and any(key in node for key in ("/V", "/T", "/Kids")))):
             field = pikepdf.AcroFormField(node)
-            if field.field_type == "/Sig" and field.value is not None:
-                fields.append(node)
+            if field.field_type == "/Sig":
+                value = field.value
+                if value is not None:
+                    fields.append(node)
+                    # /Type is optional. The field reference identifies an
+                    # untyped signature without touching unrelated private data.
+                    if isinstance(value, pikepdf.Dictionary):
+                        values.append(value)
     return fields, values
 
 
@@ -93,14 +104,11 @@ def _prepare_reading_copy(pdf):
     for node in fields:
         if node.get("/Subtype") == pikepdf.Name.Widget:
             _check_signature_appearance(node)
-        # A read-only pushbutton displays the original /AP inside the same
-        # widget and keeps its position in the drawing order. A pure child
-        # widget inherits this field type from its parent.
-        if any(key in node for key in ("/FT", "/V", "/T", "/Kids")):
-            node.FT = pikepdf.Name.Btn
-            node.Ff = int(pikepdf.FormFieldFlag.read_only | pikepdf.FormFieldFlag.btn_pushbutton)
-        elif "/Ff" in node:
-            del node["/Ff"]
+        # Keep the widget's type and /AP. A reader may regenerate a different
+        # type of field when /NeedAppearances is set. Clearing /V removes the
+        # actual signature. The original signed field becomes read-only.
+        if any(key in node for key in ("/FT", "/V", "/T", "/Kids", "/Ff")):
+            node.Ff = pikepdf.AcroFormField(node).flags | int(pikepdf.FormFieldFlag.read_only)
         _remove_keys(node, "/V", "/DV", "/SV", "/Lock", "/A", "/AA")
     # Timestamp, certification and usage-rights signatures can also be reached
     # from outside the form tree. Discard their stale validation data.
@@ -108,13 +116,13 @@ def _prepare_reading_copy(pdf):
         _remove_keys(value, "/Type", "/ByteRange", "/Contents")
     permissions = pdf.Root.get("/Perms")
     if isinstance(permissions, pikepdf.Dictionary):
-        _remove_keys(permissions, "/DocMDP", "/UR", "/UR3")
+        _remove_keys(permissions, *_PERMISSION_SIGNATURES)
         if not len(permissions):
             del pdf.Root["/Perms"]
     _remove_keys(pdf.Root, "/DSS")
     form = pdf.Root.get("/AcroForm")
-    if isinstance(form, pikepdf.Dictionary):
-        _remove_keys(form, "/SigFlags")
+    if isinstance(form, pikepdf.Dictionary) and isinstance(form.get("/SigFlags"), int):
+        form.SigFlags = form.SigFlags & ~2  # Drop AppendOnly; signature fields still exist.
     return True
 
 

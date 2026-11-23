@@ -81,7 +81,7 @@ def main():
         assert set(Path(folder).iterdir()) == {source, output}
         print("Already-compressed result window verified. Original and output remain intact.")
         signed = Path(folder) / "전자서명 두 개.pdf"
-        certs = make_signed_sample(signed, separate_widget=True, two_signers=True)
+        certs = make_signed_sample(signed, separate_widget=True, two_signers=True, needs_appearances=True)
         verify_original(signed, certs)
         signed_bytes = signed.read_bytes()
         use_picker(exe, signed, "열람용 PDF 압축 완료")

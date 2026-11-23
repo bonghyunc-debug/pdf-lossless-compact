@@ -9,7 +9,7 @@ from pikepdf import Array, Dictionary, Name
 from pyhanko.pdf_utils.reader import PdfFileReader
 
 from compress import PdfSkipped, compress
-from tests.samples import render_snapshot
+from tests.samples import make_sample, render_snapshot
 from tests.signed_samples import make_signed_sample, verify_original
 
 
@@ -21,10 +21,12 @@ class SignedCopyTests(unittest.TestCase):
         self.source = self.folder / "서명 견본.pdf"
 
     def test_valid_signatures_and_visible_appearances(self):
-        for separate, visible, two in ((False, True, False), (True, True, True), (True, False, False)):
-            with self.subTest(separate_widget=separate, visible=visible, two_signers=two):
+        for separate, visible, two, needs_ap in ((False, True, False, False), (True, True, True, False),
+                                                 (True, False, False, False), (True, True, True, True)):
+            with self.subTest(separate_widget=separate, visible=visible, two_signers=two,
+                              needs_appearances=needs_ap):
                 certs = make_signed_sample(self.source, separate_widget=separate,
-                                           visible=visible, two_signers=two)
+                                           visible=visible, two_signers=two, needs_appearances=needs_ap)
                 verify_original(self.source, certs)
                 original = self.source.read_bytes()
                 before = render_snapshot(self.source)
@@ -48,12 +50,20 @@ class SignedCopyTests(unittest.TestCase):
                     fields = {f.fully_qualified_name: f for f in pdf.acroform.fields}
                     self.assertEqual(fields["Unused"].field_type, "/Sig")
                     self.assertIsNone(fields["Unused"].value)
+                    self.assertFalse(fields["Unused"].flags & pikepdf.FormFieldFlag.read_only)
                     self.assertEqual(fields["Example field"].value, "42")
-                    self.assertEqual(fields["Approval"].field_type, "/Btn")
+                    self.assertEqual(fields["Approval"].field_type, "/Sig")
+                    self.assertIsNone(fields["Approval"].value)
+                    self.assertTrue(fields["Approval"].flags & pikepdf.FormFieldFlag.read_only)
+                    self.assertEqual(bool(pdf.Root.AcroForm.get("/NeedAppearances")), needs_ap)
+                    self.assertEqual(pdf.Root.AcroForm.SigFlags, 1)
                     self.assertNotIn("/Perms", pdf.Root)
+                    private = pdf.pages[0].obj.PieceInfo.Example.Private
+                    self.assertEqual(private.Contents, "ordinary private text")
+                    self.assertEqual(list(private.ByteRange), [0, 6, 12, 20])
                     self.assertEqual(pdf.attachments["sample.txt"].get_file().read_bytes(),
                                      b"Local sample attachment.\n")
-                print(f"Signed PDF: {len(certs)} signature(s), visible={visible}, "
+                print(f"Signed PDF: {len(certs)} signature(s), visible={visible}, NeedAppearances={needs_ap}, "
                       f"{len(original)} -> {result.candidate_size} bytes; original signatures verified; "
                       "copy has zero signatures; page pixels and text matched.")
 
@@ -85,9 +95,41 @@ class SignedCopyTests(unittest.TestCase):
             page = pdf.add_blank_page()
             page.Contents = pdf.make_stream(b"0.4 g 10 10 20 20 re f\n" * 80)
             page.obj["/ByteRange"] = Array([0, 20])
-            page.Resources.Example = Dictionary(Type=Name.Example, Contents="ordinary",
-                                                ByteRange=Array([0, 6, 12, 20]))
+            page.Resources.Example = Dictionary(Contents="ordinary", ByteRange=Array([0, 6, 12, 20]))
             pdf.save(self.source, compress_streams=False)
         result = compress(self.source)
         self.assertFalse(result.reading_copy)
         self.assertEqual(render_snapshot(result.output), render_snapshot(self.source))
+        with pikepdf.Pdf.open(result.output) as pdf:
+            data = pdf.pages[0].Resources.Example
+            self.assertEqual(data.Contents, "ordinary")
+            self.assertEqual(list(data.ByteRange), [0, 6, 12, 20])
+
+    def test_untyped_signature_field_and_usage_rights_keep_other_form_data(self):
+        base = self.folder / "base.pdf"
+        make_sample(base)
+        for location in ("field", "/UR", "/UR3"):
+            with self.subTest(location=location):
+                with pikepdf.Pdf.open(base) as pdf:
+                    value = pdf.make_indirect(Dictionary(
+                        Filter=Name("/Adobe.PPKLite"), Contents=b"test marker" * 400,
+                        ByteRange=Array([0, 12, 16, 8])))
+                    pdf.Root.ExampleAlias = value
+                    pdf.Root.Perms = Dictionary(ExamplePermission="keep")
+                    if location == "field":
+                        pdf.Root.AcroForm.Fields.append(
+                            pdf.make_indirect(Dictionary(FT=Name.Sig, T="Archived", V=value)))
+                    else:
+                        pdf.Root.Perms[location] = value
+                    pdf.save(self.source, compress_streams=False)
+                before = self.source.read_bytes()
+                result = compress(self.source)
+                self.assertTrue(result.reading_copy)
+                self.assertEqual(self.source.read_bytes(), before)
+                self.assertEqual(render_snapshot(self.source), render_snapshot(result.output))
+                with pikepdf.Pdf.open(result.output) as copy:
+                    self.assertNotIn("/Contents", copy.Root.ExampleAlias)
+                    self.assertNotIn("/ByteRange", copy.Root.ExampleAlias)
+                    self.assertEqual(set(copy.Root.Perms.keys()), {"/ExamplePermission"})
+                    self.assertEqual(copy.Root.Perms.ExamplePermission, "keep")
+                    self.assertEqual(copy.Root.AcroForm.Fields[0].V, "42")
