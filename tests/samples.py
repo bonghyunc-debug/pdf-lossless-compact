@@ -104,9 +104,10 @@ def render_snapshot(path):
 
     snapshot = []
     with pdfium.PdfDocument(path) as doc:
+        doc.init_forms()
         for page in doc:
             text = page.get_textpage()
-            bitmap = page.render(scale=2)
+            bitmap = page.render(scale=2, draw_annots=True)
             pixels = bitmap.to_pil().convert("RGB")
             snapshot.append((pixels.size, pixels.tobytes(), text.get_text_bounded()))
             bitmap.close()

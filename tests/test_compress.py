@@ -93,18 +93,25 @@ class CompressionTests(unittest.TestCase):
                     pdf.save(self.source, encryption=pikepdf.Encryption(owner="owner", user=password))
                 self.assert_skipped("보호")
 
-    def test_signature_and_timestamp(self):
+    def test_nested_signature_and_timestamp_data_are_removed_from_reading_copy(self):
         for kind in (Name.Sig, Name.DocTimeStamp, None):
             with self.subTest(kind=kind):
                 with pikepdf.Pdf.new() as pdf:
                     pdf.add_blank_page()
-                    signature = Dictionary(Contents=b"test marker", ByteRange=Array([0, 12, 16, 8]))
+                    signature = Dictionary(Contents=b"test marker" * 400, ByteRange=Array([0, 12, 16, 8]))
                     if kind:
                         signature.Type = kind
                     # The untyped case tests a nested direct dictionary.
                     pdf.Root.TestSignatures = Array([Dictionary(Entry=signature)])
                     pdf.save(self.source)
-                self.assert_skipped("전자서명")
+                original = self.source.read_bytes()
+                result = compress(self.source)
+                self.assertTrue(result.reading_copy)
+                self.assertEqual(self.source.read_bytes(), original)
+                with pikepdf.Pdf.open(result.output) as pdf:
+                    value = pdf.Root.TestSignatures[0].Entry
+                    self.assertNotIn("/ByteRange", value)
+                    self.assertNotIn("/Contents", value)
 
     def test_empty_signature_field_stays_fillable(self):
         make_sample(self.source)

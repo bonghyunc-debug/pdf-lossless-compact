@@ -18,11 +18,11 @@ class Result:
     original_size: int
     candidate_size: int
     output: Path | None
+    reading_copy: bool = False
 
 
-def _has_signature(pdf: pikepdf.Pdf) -> bool:
-    # Visit each indirect object once. A signature value may also be a direct
-    # dictionary inside a field, an array, or a catalog permission dictionary.
+def _dictionaries(pdf):
+    # Indirect objects appear separately. Walk their inline children as well.
     for obj in pdf.objects:
         pending = [obj]
         while pending:
@@ -30,10 +30,7 @@ def _has_signature(pdf: pikepdf.Pdf) -> bool:
             if isinstance(current, pikepdf.Stream):
                 current = current.stream_dict
             if isinstance(current, pikepdf.Dictionary):
-                if (current.get("/Type") in (pikepdf.Name.Sig, pikepdf.Name.DocTimeStamp)
-                        or ("/ByteRange" in current and "/Contents" in current)
-                        or (current.get("/FT") == pikepdf.Name.Sig and current.get("/V") is not None)):
-                    return True
+                yield current
                 children = (value for _, value in current.items())
             elif isinstance(current, pikepdf.Array):
                 children = iter(current)
@@ -42,15 +39,92 @@ def _has_signature(pdf: pikepdf.Pdf) -> bool:
             pending.extend(child for child in children
                            if isinstance(child, (pikepdf.Dictionary, pikepdf.Array))
                            and not child.is_indirect)
-    return False
 
 
-def _publish(temp: Path, source: Path) -> Path:
+def _signature_parts(pdf):
+    fields, values = [], []
+    for node in _dictionaries(pdf):
+        kind = node.get("/Type")
+        if (kind in (pikepdf.Name.Sig, pikepdf.Name.DocTimeStamp)
+                or (kind is None and "/Subtype" not in node
+                    and isinstance(node.get("/ByteRange"), pikepdf.Array)
+                    and isinstance(node.get("/Contents"), pikepdf.String))):
+            values.append(node)
+        if ("/FT" in node or node.get("/Subtype") == pikepdf.Name.Widget
+                or ("/Parent" in node and any(key in node for key in ("/V", "/T", "/Kids")))):
+            field = pikepdf.AcroFormField(node)
+            if field.field_type == "/Sig" and field.value is not None:
+                fields.append(node)
+    return fields, values
+
+
+def _remove_keys(obj, *keys):
+    for key in keys:
+        if key in obj:
+            del obj[key]
+
+
+def _check_signature_appearance(widget):
+    flags = int(widget.get("/F", 0))
+    rect = widget.get("/Rect")
+    if (flags & pikepdf.AnnotationFlag.hidden
+            or (flags & pikepdf.AnnotationFlag.no_view
+                and not flags & (pikepdf.AnnotationFlag.print | pikepdf.AnnotationFlag.toggle_no_view))):
+        return
+    if isinstance(rect, pikepdf.Array) and len(rect) == 4:
+        if rect[0] == rect[2] or rect[1] == rect[3]:
+            return  # Invisible signatures and document timestamps.
+    ap = widget.get("/AP")
+    normal = ap.get("/N") if isinstance(ap, pikepdf.Dictionary) else None
+    if isinstance(normal, pikepdf.Dictionary):
+        state = widget.get("/AS")
+        if isinstance(state, pikepdf.Name):
+            normal = normal.get(str(state))
+    if not isinstance(normal, pikepdf.Stream):
+        raise PdfSkipped("이 PDF에는 서명란을 그리는 데 필요한 표시 정보가 없습니다. "
+                         "원본을 보존하고 열람용 압축본을 건너뛰었습니다.")
+
+
+def _prepare_reading_copy(pdf):
+    # Collect inherited values before changing any member of the field tree.
+    fields, values = _signature_parts(pdf)
+    if not (fields or values):
+        return False
+    for node in fields:
+        if node.get("/Subtype") == pikepdf.Name.Widget:
+            _check_signature_appearance(node)
+        # A read-only pushbutton displays the original /AP inside the same
+        # widget and keeps its position in the drawing order. A pure child
+        # widget inherits this field type from its parent.
+        if any(key in node for key in ("/FT", "/V", "/T", "/Kids")):
+            node.FT = pikepdf.Name.Btn
+            node.Ff = int(pikepdf.FormFieldFlag.read_only | pikepdf.FormFieldFlag.btn_pushbutton)
+        elif "/Ff" in node:
+            del node["/Ff"]
+        _remove_keys(node, "/V", "/DV", "/SV", "/Lock", "/A", "/AA")
+    # Timestamp, certification and usage-rights signatures can also be reached
+    # from outside the form tree. Discard their stale validation data.
+    for value in values:
+        _remove_keys(value, "/Type", "/ByteRange", "/Contents")
+    permissions = pdf.Root.get("/Perms")
+    if isinstance(permissions, pikepdf.Dictionary):
+        _remove_keys(permissions, "/DocMDP", "/UR", "/UR3")
+        if not len(permissions):
+            del pdf.Root["/Perms"]
+    _remove_keys(pdf.Root, "/DSS")
+    form = pdf.Root.get("/AcroForm")
+    if isinstance(form, pikepdf.Dictionary):
+        _remove_keys(form, "/SigFlags")
+    return True
+
+
+def _publish(temp: Path, source: Path, reading_copy: bool) -> Path:
     # Both operations fail if the destination already exists, even when two
     # instances finish the same source simultaneously. rename also works on FAT.
+    tag = "_열람용_압축" if reading_copy else "_압축"
     for n in count(1):
         suffix = "" if n == 1 else f" ({n})"
-        target = source.with_name(f"{source.stem}_압축{suffix}.pdf")
+        target = source.with_name(f"{source.stem}{tag}{suffix}.pdf")
         try:
             if os.name == "nt":
                 os.rename(temp, target)
@@ -70,12 +144,10 @@ def compress(source: Path) -> Result:
             with pikepdf.Pdf.open(original, attempt_recovery=False) as pdf:
                 if pdf.is_encrypted:
                     raise PdfSkipped("암호 또는 사용 권한으로 보호된 PDF입니다.")
-                if _has_signature(pdf):
-                    raise PdfSkipped("전자서명이 있는 PDF입니다. 서명의 유효성을 보존하기 위해 건너뛰었습니다.")
-
                 pages = len(pdf.pages)
                 if not pages or pdf.check_pdf_syntax() or pdf.get_warnings():
                     raise PdfSkipped("PDF의 내부 구조를 확인할 수 없어 압축본을 만들지 않았습니다.")
+                reading_copy = _prepare_reading_copy(pdf)
 
                 # Keep the input's reader compatibility and leave XMP alone.
                 already_supports_streams = tuple(map(int, pdf.pdf_version.split("."))) >= (1, 5)
@@ -94,16 +166,18 @@ def compress(source: Path) -> Result:
 
             size = temp.stat().st_size
             if size >= initial.st_size:
-                return Result(initial.st_size, size, None)
+                return Result(initial.st_size, size, None, reading_copy)
             with pikepdf.Pdf.open(temp, attempt_recovery=False) as saved:
                 if len(saved.pages) != pages or saved.check_pdf_syntax() or saved.get_warnings():
                     raise PdfSkipped("압축 결과를 다시 확인하는 과정에서 문제가 발견되었습니다.")
+                if reading_copy and any(_signature_parts(saved)):
+                    raise PdfSkipped("열람용 압축본에서 기존 전자서명 정보를 분리할 수 없었습니다.")
 
             now = source.stat()
             if (not os.path.samestat(initial, now) or initial.st_size != now.st_size
                     or initial.st_mtime_ns != now.st_mtime_ns):
                 raise PdfSkipped("작업 중 원본 파일이 변경되었습니다. 변경이 끝난 뒤 다시 선택해 주세요.")
-            return Result(initial.st_size, size, _publish(temp, source))
+            return Result(initial.st_size, size, _publish(temp, source, reading_copy), reading_copy)
     except pikepdf.PasswordError as error:
         raise PdfSkipped("암호 또는 사용 권한으로 보호된 PDF입니다.") from error
     except pikepdf.PdfError as error:

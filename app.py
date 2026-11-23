@@ -85,10 +85,12 @@ class Window:
             if result.output:
                 saved = result.original_size - result.candidate_size
                 percent = 100 * saved / result.original_size
-                heading = "PDF 압축 완료"
+                heading = "열람용 PDF 압축 완료" if result.reading_copy else "PDF 압축 완료"
                 detail = (f"{size_text(result.original_size)} → {size_text(result.candidate_size)}\n"
                           f"{size_text(saved)} 절약 ({percent:.1f}%)\n\n"
                           f"원본 폴더에 저장했습니다.\n{result.output.name}")
+                if result.reading_copy:
+                    detail += "\n\n전자서명을 검증할 때는 원본 PDF를 사용해 주세요."
             else:
                 heading = "이미 충분히 압축된 PDF입니다"
                 detail = (f"{source.name}\n원본 크기 {size_text(result.original_size)}\n\n"
